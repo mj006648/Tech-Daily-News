@@ -7,12 +7,11 @@ This system automatically aggregates and archives the latest trends in AI, cloud
 
 ## Verified Sources
 We monitor and aggregate data from the following authoritative organizations and media:
+- **NVIDIA & AI Infrastructure**: NVIDIA Newsroom, NVIDIA Blog, OpenAI, Google DeepMind.
 - **Industry Trends**: Hacker News (Top engineering stories).
-- **AI & Machine Learning**: NVIDIA Newsroom, OpenAI, Google DeepMind, Hugging Face, arXiv.
-- **Infrastructure & Cloud**: CNCF, Kubernetes, AWS Engineering, Google Cloud Blog.
+- **AI Research**: Hugging Face, arXiv.
+- **Cloud & Kubernetes**: CNCF, Kubernetes, AWS Engineering, Google Cloud Blog.
 - **Hardware**: Tom's Hardware, Wccftech.
-- **Open Source**: GitHub Blog, Google Open Source.
-- **Data Engineering**: Apache Iceberg, Tabular.
 
 ## Automation Mechanism
 Operated autonomously by GitHub Actions. The system wakes up at 00:00 UTC, fetches the latest 24 hours of data, processes bilingual summaries, and archives them for future reference.

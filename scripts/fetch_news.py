@@ -8,16 +8,19 @@ from typing import List, Dict
 from googletrans import Translator
 from bs4 import BeautifulSoup
 
-# 저명한 기술 소스 설정
+# 저명한 기술 소스 설정 (NVIDIA 소스 보강)
 NEWS_SOURCES = {
+    "NVIDIA & AI Infrastructure": [
+        "https://nvidianews.nvidia.com/releases.xml", # 공식 보도자료
+        "https://blogs.nvidia.com/feed/",             # 공식 기술 블로그 (추가)
+        "https://openai.com/news/rss.xml",
+        "https://deepmind.google/blog/rss.xml"
+    ],
     "Industry Trends (Hacker News)": [
         "https://news.ycombinator.com/rss"
     ],
-    "AI & Machine Learning": [
-        "https://nvidianews.nvidia.com/releases.xml",
-        "https://openai.com/news/rss.xml",
+    "AI & Machine Learning Research": [
         "https://huggingface.co/blog/feed.xml",
-        "https://deepmind.google/blog/rss.xml",
         "http://export.arxiv.org/rss/cs.AI"
     ],
     "Kubernetes & Cloud Native": [
@@ -28,64 +31,70 @@ NEWS_SOURCES = {
         "https://www.tomshardware.com/rss.xml",
         "https://wccftech.com/category/hardware/feed/"
     ],
-    "Open Source Ecosystem": [
+    "Open Source & Infrastructure": [
         "https://github.blog/category/open-source/feed/",
-        "https://opensource.googleblog.com/feeds/posts/default"
-    ],
-    "Infrastructure & Cloud": [
         "https://aws.amazon.com/blogs/aws/feed/",
         "https://cloud.google.com/blog/rss"
-    ],
-    "Data Engineering & Iceberg": [
-        "https://iceberg.apache.org/feed.xml",
-        "https://www.tabular.io/blog/rss.xml"
     ]
 }
 
-def clean_html(text: str) -> str:
-    if not text:
-        return ""
-    clean = re.compile('<.*?>')
-    text = re.sub(clean, '', text)
-    return html.unescape(text).strip()
+def clean_text(text: str) -> str:
+    """텍스트 정제: 불필요한 공백, 태그, 노이즈 제거"""
+    if not text: return ""
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', '', text) # 태그 제거
+    text = re.sub(r'\s+', ' ', text)    # 연속 공백 제거
+    return text.strip()
 
-def get_article_content(url: str) -> str:
-    """원문 링크에 접속하여 본문 요약본 추출"""
+def get_smart_content(url: str) -> str:
+    """본문만 스마트하게 추출 (광고/메뉴 제외)"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200:
-            return ""
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200: return ""
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # 불필요한 태그 제거
-        for s in soup(['script', 'style', 'nav', 'header', 'footer', 'aside']):
+        # 1. 불필요한 요소 제거
+        for s in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe', 'button']):
             s.decompose()
             
-        # p 태그 위주로 본문 수집
-        paragraphs = soup.find_all('p')
-        content = " ".join([p.get_text() for p in paragraphs[:5]]) # 상위 5개 문단만 수집
+        # 2. 본문으로 추정되는 태그 찾기 (article, main, div.content 등)
+        content_tag = soup.find('article') or soup.find('main') or soup.find('div', class_=re.compile(r'content|article|post|body', re.I))
         
-        content = clean_html(content)
-        if len(content) > 800:
-            content = content[:797] + "..."
-        return content
+        if content_tag:
+            paragraphs = content_tag.find_all('p')
+        else:
+            paragraphs = soup.find_all('p')
+            
+        # 3. 의미 있는 문장들만 조합 (글자 수 제한 및 품질 체크)
+        cleaned_paragraphs = []
+        for p in paragraphs:
+            p_text = clean_text(p.get_text())
+            if len(p_text) > 40: # 너무 짧은 문장은 메뉴일 확률 높음
+                cleaned_paragraphs.append(p_text)
+                
+        full_content = " ".join(cleaned_paragraphs[:8]) # 상위 8개 문단 사용
+        
+        if len(full_content) > 1000:
+            full_content = full_content[:997] + "..."
+            
+        return full_content
     except Exception as e:
-        print(f"Error scraping {url}: {e}")
+        print(f"Scraping failed for {url}: {e}")
         return ""
 
-def translate_text(text: str, dest: str = 'ko') -> str:
-    if not text or len(text) < 10:
-        return ""
+def translate_text(text: str) -> str:
+    if not text or len(text) < 20: return "(No content to translate)"
     try:
         translator = Translator()
-        # 긴 텍스트 번역을 위해 문장 단위로 나누거나 적절히 처리
-        result = translator.translate(text, dest=dest)
+        # 번역 전 텍스트가 너무 길면 잘라서 번역
+        safe_text = text[:1500] 
+        result = translator.translate(safe_text, dest='ko')
         return result.text
     except Exception as e:
         print(f"Translation error: {e}")
-        return "(번역 중 오류가 발생했습니다)"
+        return "(Translation failed)"
 
 def fetch_news(category: str, urls: List[str]) -> List[Dict]:
     news_items = []
@@ -97,36 +106,32 @@ def fetch_news(category: str, urls: List[str]) -> List[Dict]:
             feed = feedparser.parse(url)
             source_name = feed.feed.get('title', url.split('/')[2])
             
-            limit = 5 if "ycombinator" in url else 3 # Hacker News는 상위 5개만
+            # Hacker News는 5개, 나머지는 3개
+            limit = 5 if "news.ycombinator.com" in url else 3
             count = 0
             
             for entry in feed.entries:
-                if count >= limit:
-                    break
+                if count >= limit: break
                 
-                # 발행일 필터링
+                # 날짜 필터링 (최근 24시간)
                 published_parsed = getattr(entry, "published_parsed", None)
                 if published_parsed:
                     pub_date = datetime.datetime(*published_parsed[:6], tzinfo=datetime.timezone.utc)
-                    if pub_date < one_day_ago:
-                        continue
+                    if pub_date < one_day_ago: continue
                 
-                # 1단계: RSS 피드에서 요약 가져오기
-                summary = clean_html(getattr(entry, "summary", getattr(entry, "description", "")))
+                print(f"[{category}] Processing: {entry.title}")
                 
-                # 2단계: 요약이 부실한 경우(Hacker News 등) 원문 직접 크롤링
-                if len(summary) < 100:
-                    print(f"Summary too short for {entry.title}. Fetching original content...")
-                    scraped_content = get_article_content(entry.link)
-                    if scraped_content:
-                        summary = scraped_content
+                # 스마트 본문 추출
+                summary_en = get_smart_content(entry.link)
                 
-                # 요약이 여전히 부실하면 제목이라도 활용
-                if not summary or len(summary) < 20:
-                    summary = entry.title
+                # 본문 추출 실패 시 RSS 요약이라도 활용
+                if not summary_en or len(summary_en) < 100:
+                    summary_en = clean_text(getattr(entry, "summary", getattr(entry, "description", entry.title)))
                 
-                # 최소 3줄 이상 확보를 위해 가공 (너무 짧으면 반복하지는 않음)
-                summary_en = summary
+                # 최종 요약문이 3줄 이상 되도록 가공
+                if len(summary_en.split('.')) < 3:
+                    summary_en = (summary_en + " " + entry.title).strip()
+
                 summary_ko = translate_text(summary_en)
                 
                 news_items.append({
@@ -140,7 +145,7 @@ def fetch_news(category: str, urls: List[str]) -> List[Dict]:
                 count += 1
                 
         except Exception as e:
-            print(f"Error fetching from {url}: {e}")
+            print(f"Error in {url}: {e}")
             
     return news_items
 
@@ -152,18 +157,17 @@ def create_daily_readme(news_data: Dict[str, List[Dict]]):
     file_path = os.path.join(archive_dir, "README.md")
     
     content = f"# Technical Daily Report - {today}\n\n"
-    content += "Detailed bilingual report of high-authority technical updates from the past 24 hours.\n\n"
+    content += "Detailed technical insights curated from high-authority global sources within the last 24 hours.\n\n"
     
     for category, items in news_data.items():
-        if not items:
-            continue
+        if not items: continue
         content += f"## {category}\n\n"
         for item in items:
             content += f"### {item['title']}\n"
             content += f"- **Source**: {item['source']} | **Date**: {item['published']}\n"
-            content += f"- **Summary (EN)**:\n{item['summary_en']}\n"
-            content += f"- **요약 (KO)**:\n{item['summary_ko']}\n"
-            content += f"- **Read More**: [Original Content]({item['link']})\n\n"
+            content += f"- **Summary (English)**:\n{item['summary_en']}\n"
+            content += f"- **Summary (Korean)**:\n{item['summary_ko']}\n"
+            content += f"- **Full Article**: [Read More]({item['link']})\n\n"
             content += "---\n"
         content += "\n"
     
@@ -174,7 +178,7 @@ def create_daily_readme(news_data: Dict[str, List[Dict]]):
 
 def update_main_readme(today: str):
     main_readme = "README.md"
-    link_line = f"| {today} | [Detailed Report](archive/{today}/README.md) |"
+    link_line = f"| {today} | [Full Report](archive/{today}/README.md) |"
     
     archives = []
     if os.path.exists(main_readme):
@@ -196,12 +200,11 @@ This system automatically aggregates and archives the latest trends in AI, cloud
 
 ## Verified Sources
 We monitor and aggregate data from the following authoritative organizations and media:
+- **NVIDIA & AI Infrastructure**: NVIDIA Newsroom, NVIDIA Blog, OpenAI, Google DeepMind.
 - **Industry Trends**: Hacker News (Top engineering stories).
-- **AI & Machine Learning**: NVIDIA Newsroom, OpenAI, Google DeepMind, Hugging Face, arXiv.
-- **Infrastructure & Cloud**: CNCF, Kubernetes, AWS Engineering, Google Cloud Blog.
+- **AI Research**: Hugging Face, arXiv.
+- **Cloud & Kubernetes**: CNCF, Kubernetes, AWS Engineering, Google Cloud Blog.
 - **Hardware**: Tom's Hardware, Wccftech.
-- **Open Source**: GitHub Blog, Google Open Source.
-- **Data Engineering**: Apache Iceberg, Tabular.
 
 ## Automation Mechanism
 Operated autonomously by GitHub Actions. The system wakes up at 00:00 UTC, fetches the latest 24 hours of data, processes bilingual summaries, and archives them for future reference.
@@ -219,7 +222,7 @@ Operated autonomously by GitHub Actions. The system wakes up at 00:00 UTC, fetch
 if __name__ == "__main__":
     all_news = {}
     for category, urls in NEWS_SOURCES.items():
-        print(f"Processing {category} with Deep Scraper...")
+        print(f"Scraping {category}...")
         all_news[category] = fetch_news(category, urls)
     
     today_date = create_daily_readme(all_news)
